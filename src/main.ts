@@ -1,7 +1,5 @@
-import {App, Editor, MarkdownView, Modal, Notice, Plugin} from 'obsidian';
-import {DEFAULT_SETTINGS, MyPluginSettings, SampleSettingTab} from "./settings";
-
-// Remember to rename these classes and interfaces!
+import {Plugin} from 'obsidian';
+import {DEFAULT_SETTINGS, MyPluginSettings} from "./settings";
 
 export default class MyPlugin extends Plugin {
 	settings: MyPluginSettings;
@@ -9,69 +7,176 @@ export default class MyPlugin extends Plugin {
 	async onload() {
 		await this.loadSettings();
 
-		// This creates an icon in the left ribbon.
-		this.addRibbonIcon('dice', 'Sample', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
-
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status bar text');
-
-		// This adds a simple command that can be triggered anywhere
 		this.addCommand({
-			id: 'open-modal-simple',
-			name: 'Open modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			}
+			id: 'dummy-command',
+			name: 'Dummy Command',
+			callback: () => this.dummyFunction()
 		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'replace-selected',
-			name: 'Replace selected content',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				editor.replaceSelection('Sample editor command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-modal-complex',
-			name: 'Open modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
-
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
-				}
-				return false;
-			}
-		});
-
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
-
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			new Notice("Click");
-		});
-
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
-
 	}
 
 	onunload() {
 	}
+async dummyFunction() {
+	const files = this.app.vault.getFiles();
+
+	const attachments = [];
+	const indexFiles = [];
+
+	for (const file of files) {
+		if (file.extension !== 'md') {
+			attachments.push(file);
+			continue;
+		}
+
+		const cache = this.app.metadataCache.getFileCache(file);
+
+		if (cache?.frontmatter?.attachmentIndex === true) {
+			indexFiles.push(file);
+		}
+	}
+
+	// Convert to Set for efficient removal
+	const remainingAttachments = new Set(attachments);
+
+	for (const indexFile of indexFiles) {
+		const cache = this.app.metadataCache.getFileCache(indexFile);
+
+		if (!cache) {
+			console.warn(`No cache found for ${indexFile.path}`);
+			continue;
+		}
+
+		// -----------------------------
+		// Validate embeds
+		// -----------------------------
+		const embeds = cache.embeds ?? [];
+
+		if (embeds.length !== 1) {
+			console.warn(
+				`${indexFile.path} must contain exactly one embedded file`
+			);
+			continue;
+		}
+
+		const embed = embeds[0];
+
+		if (!embed) {
+			console.warn(`${indexFile.path} embed could not be read`);
+			continue;
+		}
+
+		const embeddedPath = embed.link;
+
+		// Resolve embedded file
+		const embeddedFile =
+			this.app.metadataCache.getFirstLinkpathDest(
+				embeddedPath,
+				indexFile.path
+			);
+
+		if (!embeddedFile) {
+			console.warn(
+				`Could not resolve embedded file "${embeddedPath}" in ${indexFile.path}`
+			);
+			continue;
+		}
+
+		// -----------------------------
+		// Validate frontmatter
+		// -----------------------------
+		const attachmentField = cache.frontmatter?.attachment;
+
+		if (!attachmentField) {
+			console.warn(
+				`${indexFile.path} is missing frontmatter field "attachment"`
+			);
+			continue;
+		}
+
+		const normalizedAttachmentField = attachmentField
+			.replace(/^\[\[/, '')
+			.replace(/\]\]$/, '');
+
+		const frontmatterFile =
+			this.app.metadataCache.getFirstLinkpathDest(
+				normalizedAttachmentField,
+				indexFile.path
+			);
+
+		if (!frontmatterFile) {
+			console.warn(
+				`Could not resolve frontmatter attachment "${attachmentField}" in ${indexFile.path}`
+			);
+			continue;
+		}
+
+		// -----------------------------
+		// Verify both references match
+		// -----------------------------
+		if (embeddedFile.path !== frontmatterFile.path) {
+			console.warn(
+				`${indexFile.path} has mismatched embed and frontmatter attachment`
+			);
+			continue;
+		}
+
+		// -----------------------------
+		// Remove from attachment list
+		// -----------------------------
+		remainingAttachments.delete(embeddedFile);
+	}
+
+	// -----------------------------
+	// Create missing index files
+	// -----------------------------
+	for (const attachment of remainingAttachments) {
+		// const attachmentType = attachment.extension.toUpperCase();
+		const attachmentType =attachment.extension.charAt(0).toUpperCase() + attachment.extension.slice(1).toLowerCase();
+
+		const baseName = `${attachmentType}- ${attachment.basename}`;
+
+		let fileName = `${baseName}.md`;
+		let counter = 1;
+
+		// Ensure unique filename
+		while (this.app.vault.getAbstractFileByPath(fileName)) {
+			fileName = `${baseName} ${counter}.md`;
+			counter++;
+		}
+
+		// Escape attachment path for wikilink/frontmatter
+		const attachmentLink = attachment.path;
+
+		const created = Date.now();
+		const content = `---
+attachmentIndex: true
+attachment: "[[${attachmentLink}]]"
+created: "${created}"
+modified: "${created}"
+---
+
+![[${attachmentLink}]]
+	`;
+
+		try {
+			await this.app.vault.create(fileName, content);
+
+			console.log(
+				`Created attachment index "${fileName}" for "${attachment.path}"`
+			);
+		} catch (err) {
+			console.error(
+				`Failed to create attachment index for "${attachment.path}"`,
+				err
+			);
+		}
+	}
+
+	console.log(
+		`Remaining attachments (${remainingAttachments.size}):`,
+		Array.from(remainingAttachments)
+	);
+}
 
 	async loadSettings() {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() as Partial<MyPluginSettings>);
@@ -79,21 +184,5 @@ export default class MyPlugin extends Plugin {
 
 	async saveSettings() {
 		await this.saveData(this.settings);
-	}
-}
-
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
-	}
-
-	onOpen() {
-		let {contentEl} = this;
-		contentEl.setText('Woah!');
-	}
-
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
 	}
 }
