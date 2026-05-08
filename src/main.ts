@@ -1,5 +1,5 @@
 import {Plugin} from 'obsidian';
-import {DEFAULT_SETTINGS, MyPluginSettings} from "./settings";
+import {DEFAULT_SETTINGS, MyPluginSettings, MyPluginSettingTab} from "./settings";
 
 export default class MyPlugin extends Plugin {
 	settings: MyPluginSettings;
@@ -7,22 +7,49 @@ export default class MyPlugin extends Plugin {
 	async onload() {
 		await this.loadSettings();
 
+		this.addSettingTab(new MyPluginSettingTab(this.app, this));
+
 		this.addCommand({
-			id: 'dummy-command',
-			name: 'Dummy Command',
-			callback: () => this.dummyFunction()
+			id: 'index-all-attachments',
+			name: 'Create Index Files for all Attachments in the Vault',
+			callback: () => this.indexAllAttachments()
 		});
 	}
 
 	onunload() {
 	}
-async dummyFunction() {
+async indexAllAttachments() {
 	const files = this.app.vault.getFiles();
+
+	// Build excluded folder list from settings (one path per line)
+	const excludedFolders = (this.settings?.excludedFolders || '')
+		.split(/\r?\n/)
+		.map(s => s.trim())
+		.filter(Boolean)
+		.map(p => p.replace(/^\/+|\/+$/g, ''));
+
+		// Single output folder for created index files (trim slashes)
+		const indexFolder = (this.settings?.indexFolder || '').trim().replace(/^\/+|\/+$/g, '');
+
+		// Ensure the index output folder exists if configured
+		if (indexFolder) {
+			try {
+				if (!this.app.vault.getAbstractFileByPath(indexFolder)) {
+					await this.app.vault.createFolder(indexFolder);
+				}
+			} catch (err) {
+				console.warn(`Could not create index folder "${indexFolder}"`, err);
+			}
+		}
 
 	const attachments = [];
 	const indexFiles = [];
 
 	for (const file of files) {
+		// Skip files that live under any excluded folder
+		if (excludedFolders.some(ex => file.path.startsWith(ex))) {
+			continue;
+		}
 		if (file.extension !== 'md') {
 			attachments.push(file);
 			continue;
@@ -138,10 +165,12 @@ async dummyFunction() {
 		let fileName = `${baseName}.md`;
 		let counter = 1;
 
-		// Ensure unique filename
-		while (this.app.vault.getAbstractFileByPath(fileName)) {
+		// Ensure unique filename (check within configured folder if present)
+		let candidatePath = indexFolder ? `${indexFolder}/${fileName}` : fileName;
+		while (this.app.vault.getAbstractFileByPath(candidatePath)) {
 			fileName = `${baseName} ${counter}.md`;
 			counter++;
+			candidatePath = indexFolder ? `${indexFolder}/${fileName}` : fileName;
 		}
 
 		// Escape attachment path for wikilink/frontmatter
@@ -159,10 +188,10 @@ modified: "${created}"
 	`;
 
 		try {
-			await this.app.vault.create(fileName, content);
+			await this.app.vault.create(candidatePath, content);
 
 			console.log(
-				`Created attachment index "${fileName}" for "${attachment.path}"`
+				`Created attachment index "${candidatePath}" for "${attachment.path}"`
 			);
 		} catch (err) {
 			console.error(
