@@ -30,6 +30,8 @@ export default class MyPlugin extends Plugin {
 	async handleCreate(file: any) {
 		try {
 			if (!file) return;
+			// Respect user toggle: do not index new attachments when disabled
+			if (this.settings?.disableNewAttachments) return;
 			// Ignore notes; only create indexes for non-markdown attachments
 			if (file.extension === 'md') return;
 
