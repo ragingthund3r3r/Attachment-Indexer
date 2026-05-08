@@ -1,4 +1,4 @@
-import {Plugin} from 'obsidian';
+import {Plugin, TAbstractFile, TFile, TFolder} from 'obsidian';
 import {DEFAULT_SETTINGS, MyPluginSettings, MyPluginSettingTab} from "./settings";
 
 export default class MyPlugin extends Plugin {
@@ -9,11 +9,80 @@ export default class MyPlugin extends Plugin {
 
 		this.addSettingTab(new MyPluginSettingTab(this.app, this));
 
+		this.app.workspace.onLayoutReady(async () => {
+			this.registerEvent(this.app.vault.on('create', (file) => this.handleCreate(file)));
+
+		});
+
+
 		this.addCommand({
 			id: 'index-all-attachments',
 			name: 'Create Index Files for all Attachments in the Vault',
 			callback: () => this.indexAllAttachments()
 		});
+	}
+
+
+
+
+
+
+	async handleCreate(file: any) {
+		try {
+			if (!file) return;
+			// Ignore notes; only create indexes for non-markdown attachments
+			if (file.extension === 'md') return;
+
+			// Build excluded folder list from settings (one path per line)
+			const excludedFolders = (this.settings?.excludedFolders || '')
+				.split(/\r?\n/)
+				.map(s => s.trim())
+				.filter(Boolean)
+				.map(p => p.replace(/^\/+|\/+$/g, ''));
+
+			// Single output folder for created index files (trim slashes)
+			const indexFolder = (this.settings?.indexFolder || '').trim().replace(/^\/+|\/+$/g, '');
+
+			// Skip if file is in an excluded folder or inside the index folder itself
+			if (excludedFolders.some(ex => file.path.startsWith(ex))) return;
+			if (indexFolder && file.path.startsWith(indexFolder)) return;
+
+			// Ensure the index output folder exists if configured
+			if (indexFolder) {
+				try {
+					if (!this.app.vault.getAbstractFileByPath(indexFolder)) {
+						await this.app.vault.createFolder(indexFolder);
+					}
+				} catch (err) {
+					console.warn(`Could not create index folder "${indexFolder}"`, err);
+				}
+			}
+
+			// Build a unique filename within the index folder (or root if not set)
+			const attachmentType = file.extension.charAt(0).toUpperCase() + file.extension.slice(1).toLowerCase();
+			const baseName = `${attachmentType}- ${file.basename}`;
+			let fileName = `${baseName}.md`;
+			let counter = 1;
+			let candidatePath = indexFolder ? `${indexFolder}/${fileName}` : fileName;
+			while (this.app.vault.getAbstractFileByPath(candidatePath)) {
+				fileName = `${baseName} ${counter}.md`;
+				counter++;
+				candidatePath = indexFolder ? `${indexFolder}/${fileName}` : fileName;
+			}
+
+			const attachmentLink = file.path;
+			const created = Date.now();
+			const content = `---\nattachmentIndex: true\nattachment: "[[${attachmentLink}]]"\ncreated: "${created}"\nmodified: "${created}"\n---\n\n![[${attachmentLink}]]\n`;
+
+			try {
+				await this.app.vault.create(candidatePath, content);
+				console.log(`Created attachment index "${candidatePath}" for "${file.path}"`);
+			} catch (err) {
+				console.error(`Failed to create attachment index for "${file.path}"`, err);
+			}
+		} catch (err) {
+			console.error('Error in handleCreate', err);
+		}
 	}
 
 	onunload() {
